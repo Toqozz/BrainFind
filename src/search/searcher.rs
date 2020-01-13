@@ -7,121 +7,72 @@ use std::fs::{
 use std::path::Path;
 use std::time::Instant;
 
+use rayon::prelude::*;
 
-#[derive(Clone)]
-pub struct SearchFile {
+//use grep::matcher::Matcher;
+use grep::regex::RegexMatcher;
+use grep::searcher::{Searcher, SearcherBuilder, BinaryDetection};
+use grep::searcher::sinks::UTF8;
+use grep::printer::Standard;
+
+pub struct MatchInfo {
     pub filename: String,
-    pub lines: Vec<String>,
+    pub line: String,
+    pub line_number: u64,
 }
 
-impl SearchFile {
-    fn new(path: &Path) -> Self {
-        let mut lines = Vec::new();
+pub fn search(query: &str, paths: &Vec<String>) -> Vec<MatchInfo> {
+    let now = Instant::now();
 
-        let file = OpenOptions::new().read(true).open(path).expect("Failed to open file.");
-        let buf_reader = BufReader::new(file);
+    let matcher = RegexMatcher::new(query).expect("Bad regex.");
+    let mut searcher = SearcherBuilder::new()
+        .binary_detection(BinaryDetection::quit(b'\x00'))
+        .build();
 
-        for line in buf_reader.lines() {
-            if let Ok(line_str) = line {
-                lines.push(line_str);
-            } else {
-                // Probably a binary file or something -- not useful.
-                break;
-            }
-        }
+    let mut matches = vec![];
 
-        Self {
-            filename: path.to_str().unwrap().to_string(),
-            lines,
-        }
+    paths
+        .iter()
+        .for_each(|path| {
+            searcher.search_path(
+                &matcher,
+                path,
+                UTF8(|lnum, line| {
+                    let match_info = MatchInfo {
+                        filename: path.clone(),
+                        line: line.to_string(),
+                        line_number: lnum,
+                    };
+
+                    matches.push(match_info);
+                    Ok(true)
+                })
+            );
+        });
+
+    /*
+    for path in paths {
+        let result = searcher.search_path(
+            &matcher,
+            path,
+            UTF8(|lnum, line| {
+                // Find the exact match.
+                //let mymatch = matcher.find(line.as_bytes()).unwrap().unwrap();
+                matches.push(line.to_string());
+                Ok(true)
+            })
+        );
     }
+    */
+
+    let elapsed = now.elapsed();
+    dbg!(elapsed);
+
+    matches
 }
 
-pub struct Searcher<'a> {
-    search_dir: &'a Path,
 
-    search_base: Vec<SearchFile>,
-    search_include: Vec<usize>,
-
-    pub search_results: Vec<usize>,
-}
-
-impl Default for Searcher<'_> {
-    fn default() -> Self {
-        let search_base = vec![];
-        let search_include = vec![];
-        let search_results = vec![];
-
-        Self {
-            search_dir: "./".as_ref(),
-            search_base,
-            search_include,
-            search_results,
-        }
-    }
-}
-
-impl<'a> Searcher<'a> {
-    pub fn init(&mut self) {
-        let now = Instant::now();
-
-        self.search_base = visit_dirs(self.search_dir);
-        for i in 0..self.search_base.len() {
-            self.search_include.push(i);
-        }
-
-        let elapsed_visit = now.elapsed();
-        dbg!(elapsed_visit);
-    }
-
-    pub fn filter_further(&mut self, query: &str) {
-        let now = Instant::now();
-
-        self.search_results.clear();
-
-        let mut i = 0;
-        while i < self.search_include.len() {
-            let idx = self.search_include[i];
-
-            let search_file = &self.search_base[idx];
-
-            let mut interesting = false;
-            if search_file.filename.contains(query) {
-                self.search_results.push(idx);
-                interesting = true;
-            }
-
-            for line in &search_file.lines {
-                if line.contains(query) {
-                    self.search_results.push(idx);
-                    interesting = true;
-                }
-            }
-
-            if !interesting {
-                self.search_include.swap_remove(i);
-            } else {
-                i += 1;
-            }
-        }
-
-        let elapsed = now.elapsed();
-        dbg!(elapsed);
-    }
-
-    pub fn reset(&mut self) {
-        self.search_include.clear();
-        for i in 0..self.search_base.len() {
-            self.search_include.push(i);
-        }
-    }
-
-    pub fn retrieve(&self, idx: usize) -> &SearchFile {
-        &self.search_base[idx]
-    }
-}
-
-fn visit_dirs(dir: &Path) -> Vec<SearchFile> {
+pub fn visit_dirs(dir: &Path) -> Vec<String> {
     let mut files = Vec::new();
 
     if dir.is_dir() {
@@ -131,7 +82,7 @@ fn visit_dirs(dir: &Path) -> Vec<SearchFile> {
                 files.append(visit_dirs(&entry.path()).as_mut());
             } else if entry.path().is_file() {
                 let filename = entry.path().to_str().unwrap().to_string();
-                files.push(SearchFile::new(filename.as_ref()));
+                files.push(filename);
             }
         }
     }
