@@ -38,8 +38,9 @@ struct Search {
 
     state: State,
 
-    files: Vec<String>,
-    results: Vec<MatchInfo>,
+    //files: Vec<String>,
+    searcher: searcher::ParallelSearcher,
+    //results: Vec<MatchInfo>,
 
     input: text_input::State,
 }
@@ -50,12 +51,14 @@ impl Default for Search {
         //searcher.init();
 
         let files = searcher::visit_dirs("./".as_ref());
+        let searcher = searcher::ParallelSearcher::new(files, 1);
 
         Self {
             query: "".to_string(),
             state: State::Idle,
-            files,
-            results: vec![],
+            //files,
+            searcher,
+            //results: vec![],
             //searcher,
             input: text_input::State::new(),
         }
@@ -88,10 +91,9 @@ impl Application for Search {
             Message::InputChanged(query) => {
                 if query.len() < self.query.len() {
                 } else {
-                    let results = searcher::search(&query, &self.files);
-                    self.results = results;
+                    self.searcher.search(&query);
+                    //let results = searcher::search(&query, &mut self.files.clone());
                 }
-
 
                 self.query = query;
             }
@@ -104,8 +106,8 @@ impl Application for Search {
         let mut results = Column::new()
             .padding(20);
 
-        let len = self.results.len();
-        for match_info in &self.results[..len.min(20)] {
+        let len = self.searcher.results.len();
+        for match_info in &self.searcher.results[..len.min(20)] {
             let text_filename = Text::new(&match_info.filename);
             let text_line = Text::new(&match_info.line).width(Length::Fill);
             let text_line_num = Text::new(&match_info.line_number.to_string()).width(Length::Shrink);
