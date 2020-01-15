@@ -7,123 +7,114 @@ use std::fs::{
 use std::path::Path;
 use std::time::Instant;
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
+use std::thread;
 
 use rayon::prelude::*;
-
-//use grep::matcher::Matcher;
-use grep::searcher::sinks;
-use grep::regex::RegexMatcher;
-use grep::searcher::{Searcher, SearcherBuilder, BinaryDetection};
-use grep::searcher::sinks::UTF8;
-use grep::printer::Standard;
 
 use rand;
 use rand::seq::SliceRandom;
 
-use std::thread;
-
-pub struct MatchInfo {
+#[derive(Clone)]
+pub struct SearchFile {
     pub filename: String,
-    pub line: String,
-    pub line_number: u64,
+    pub lines: Vec<String>,
 }
 
-pub struct ParallelSearcher {
-    pub threads: usize,
+pub struct Searcher {
+    pub search_base: Vec<SearchFile>,
+    pub search_include: Vec<usize>,
 
-    pub searchers: Vec<Searcher>,
-    pub split_paths: Vec<Vec<String>>,
-
-    pub results: Vec<MatchInfo>,
+    pub search_results: Vec<(usize, Vec<usize>)>,
 }
 
-impl ParallelSearcher {
-    pub fn new(mut paths: Vec<String>, threads: usize) -> Self {
-        let mut searcher = SearcherBuilder::new()
-            .binary_detection(BinaryDetection::quit(b'\x00'))
-            .build();
+impl Searcher {
+    pub fn new(path: &str) -> Self {
+        let mut filenames = visit_dirs(Path::new(path));
 
-        let mut searchers = vec![];
-        for i in 0..threads {
-            searchers.push(searcher.clone());
-        }
+        let mut open_options = OpenOptions::new();
 
-        // Shuffle because in our test data later paths do more.
-        paths.shuffle(&mut rand::thread_rng());
-        dbg!(paths.len());
+        let search_base: Vec<SearchFile> =
+            filenames.iter().map(|filename| {
+                let file = open_options.read(true).open(filename).expect("Failed to open file.");
+                let buf_lines = BufReader::new(file).lines();
 
-        let mut split_paths = vec![];
-        for chunk in paths.chunks((paths.len() + 1) / threads) {
-            split_paths.push(chunk.to_owned());
-        }
-        dbg!(split_paths.len());
+                // TODO: try just pushing.
+                let mut lines = vec![];
+                for line in buf_lines {
+                    if let Ok(line_str) = line {
+                        lines.push(line_str);
+                    } else {
+                        // Probably a binary file or something.
+                        break;
+                    }
+                }
+
+                SearchFile {
+                    filename: filename.to_string(),
+                    lines,
+                }
+            }).collect();
+
+        let search_include: Vec<usize> = (0..search_base.len()).collect();
 
         Self {
-            threads,
-            searchers,
-            split_paths,
-            results: vec![],
+            search_base,
+            search_include,
+            search_results: vec![],
         }
     }
 
-    pub fn search(&mut self, query: &str) {
+    pub fn filter_further(&mut self, query: &str) {
         let now = Instant::now();
 
-        let matcher = {
-            match RegexMatcher::new(query) {
-                Ok(m) => m,
-                Err(e) => return,
+        self.search_results.clear();
+
+        dbg!(self.search_include.len());
+
+        let mut i = 0;
+        while i < self.search_include.len() {
+            let idx = self.search_include[i];
+
+            let search_file = &self.search_base[idx];
+            let mut interesting = false;
+            if search_file.filename.contains(query) {
+                interesting = true;
+
+                let mut match_lines = vec![];
+                for (j, line) in search_file.lines.iter().enumerate() {
+                    if line.contains(query) {
+                        match_lines.push(j);
+                    }
+                }
+
+                self.search_results.push((idx, match_lines));
+            } else {
+                let mut match_lines = vec![];
+                for (j, line) in search_file.lines.iter().enumerate() {
+                    if line.contains(query) {
+                        interesting = true;
+
+                        match_lines.push(j)
+                    }
+                }
+
+                self.search_results.push((idx, match_lines));
             }
-        };
 
-        self.results.clear();
 
-        let (send, recv) = channel();
-        let mut children = Vec::with_capacity(self.threads);
-
-        for i in 0..self.threads {
-            let sx = send.clone();
-
-            let matchr = matcher.clone();
-
-            let mut searcher = self.searchers.pop().unwrap();
-            let paths = self.split_paths.pop().unwrap();
-
-            let child = thread::spawn(move || {
-                paths.iter()
-                    .for_each(|path| {
-                        searcher.search_path(
-                            &matchr,
-                            path,
-                            UTF8(|lnum, line| {
-                                let match_info = MatchInfo {
-                                    filename: path.clone(),
-                                    line: line.to_string(),
-                                    line_number: lnum,
-                                };
-
-                                sx.send(match_info);
-                                Ok(true)
-                            }),
-                        );
-                    });
-            });
-
-            children.push(child);
-        }
-
-        for child in children {
-            child.join().expect("Failed to join.");
-            dbg!("Joined.");
-        }
-
-        while let Ok(match_info) = recv.try_recv() {
-            self.results.push(match_info);
+            if !interesting {
+                self.search_include.swap_remove(i);
+            } else {
+                i += 1;
+            }
         }
 
         let elapsed = now.elapsed();
         dbg!(elapsed);
+    }
+
+    pub fn reset_filter(&mut self) {
+        self.search_include = (0..self.search_base.len()).collect();
     }
 }
 

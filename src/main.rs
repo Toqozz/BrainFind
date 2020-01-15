@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Instant;
 
 mod search;
-use search::searcher;
+use search::searcher::Searcher;
 
 use iced::{
     button,
@@ -35,31 +35,19 @@ enum State {
 
 struct Search {
     query: String,
-
     state: State,
-
-    //files: Vec<String>,
-    searcher: searcher::ParallelSearcher,
-    //results: Vec<MatchInfo>,
-
+    searcher: Searcher,
     input: text_input::State,
 }
 
 impl Default for Search {
     fn default() -> Self {
-        //let mut searcher = Searcher::default();
-        //searcher.init();
-
-        let files = searcher::visit_dirs("./".as_ref());
-        let searcher = searcher::ParallelSearcher::new(files, 1);
+        let searcher = Searcher::new("./");
 
         Self {
             query: "".to_string(),
             state: State::Idle,
-            //files,
             searcher,
-            //results: vec![],
-            //searcher,
             input: text_input::State::new(),
         }
     }
@@ -68,7 +56,6 @@ impl Default for Search {
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::BufReader;
-use crate::search::searcher::MatchInfo;
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -90,9 +77,9 @@ impl Application for Search {
         match message {
             Message::InputChanged(query) => {
                 if query.len() < self.query.len() {
+                    self.searcher.reset_filter();
                 } else {
-                    self.searcher.search(&query);
-                    //let results = searcher::search(&query, &mut self.files.clone());
+                    self.searcher.filter_further(&query);
                 }
 
                 self.query = query;
@@ -106,38 +93,30 @@ impl Application for Search {
         let mut results = Column::new()
             .padding(20);
 
-        let len = self.searcher.results.len();
-        for match_info in &self.searcher.results[..len.min(20)] {
-            let text_filename = Text::new(&match_info.filename);
-            let text_line = Text::new(&match_info.line).width(Length::Fill);
-            let text_line_num = Text::new(&match_info.line_number.to_string()).width(Length::Shrink);
+        //let len = self.searcher.search_results.len();
+        let mut view_lines = 0;
+        for (idx, lines) in &self.searcher.search_results {
+            let search_file = &self.searcher.search_base[*idx];
 
             let mut file_block = Column::new().padding(5);
-            file_block = file_block.push(text_filename);
-            let mut row = Row::new().spacing(10);
-            row = row.push(text_line_num);
-            row = row.push(text_line);
-            file_block = file_block.push(row);
+            file_block = file_block.push(Text::new(&search_file.filename));
+            view_lines += 1;
+
+            for line_num in lines {
+                let mut row = Row::new().spacing(10);
+                row = row.push(Text::new(line_num.to_string()).width(Length::Shrink));
+                row = row.push(Text::new(&search_file.lines[*line_num]));
+                file_block = file_block.push(row);
+
+                view_lines += 1;
+            }
 
             results = results.push(file_block);
+
+            if view_lines >= 20 {
+                break;
+            }
         }
-
-        /*
-        for idx in &self.searcher.search_results[..len.min(20)] {
-            let search_file = &self.searcher.retrieve(*idx);
-
-            let text_filename = Text::new(&search_file.filename);
-            let text_lines = Text::new(&search_file.lines[0]);
-
-            let mut file_block = Column::new().padding(5);
-            file_block = file_block.push(text_filename);
-            file_block = file_block.push(text_lines);
-
-
-
-            results = results.push(file_block);
-        }
-        */
 
         Column::new()
             .padding(20)
